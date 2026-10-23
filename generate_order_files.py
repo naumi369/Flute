@@ -27,10 +27,25 @@ import threading
 import json
 from pathlib import Path
 
-# ---------- Styles ----------
-yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-pale_green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Total row
-light_gray_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")  # BOM section
+# ---------- Styles (modern multi-color palette) ----------
+# Header labels (soft slate blue)
+header_label_fill = PatternFill(start_color="D6E3F0", end_color="D6E3F0", fill_type="solid")
+# Header values / key inputs (light sky blue)
+header_value_fill = PatternFill(start_color="DEEBF7", end_color="DEEBF7", fill_type="solid")
+# BOM structure rows: Sub-Bag / Qlty / Size / Stones (soft lavender)
+bom_struct_fill = PatternFill(start_color="E2D5F1", end_color="E2D5F1", fill_type="solid")
+# Pre-calculated carat reference row (warm amber)
+carat_ref_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+# Flute data-entry rows (soft mint – user types here)
+flute_input_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+# Total row (stronger green)
+total_row_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+# Section title bars
+section_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+# Legacy aliases used in a few places
+yellow_fill = header_label_fill
+pale_green_fill = total_row_fill
+light_gray_fill = section_fill
 no_fill = PatternFill(fill_type=None)
 thin_side = Side(style='thin')
 dotted_side = Side(style='dotted')
@@ -43,6 +58,7 @@ arial_9_bold = Font(name='Arial', size=9, bold=True)
 arial_10_bold = Font(name='Arial', size=10, bold=True)
 calibri_11_bold = Font(name='Calibri', size=11, bold=True)
 white_font = Font(name='Arial', size=10, bold=True, color="FFFFFF")
+dark_font = Font(name='Arial', size=8, bold=True, color="1F4E79")
 
 FIRST_STONE_COL = 3  # Column C
 
@@ -178,13 +194,14 @@ def create_order_file(order_no, rows, output_dir="output"):
     ]
     for row, label, value in labels:
         cell_l = ws.cell(row=row, column=4, value=label)
-        cell_l.font = arial_8_bold
-        cell_l.fill = yellow_fill
+        cell_l.font = dark_font
+        cell_l.fill = header_label_fill
         cell_l.border = thin
         cell_l.alignment = left_align
 
         cell_v = ws.cell(row=row, column=5, value=value)
         cell_v.font = arial_8_bold
+        cell_v.fill = header_value_fill
         cell_v.border = thin
 
     # Right labels
@@ -198,13 +215,14 @@ def create_order_file(order_no, rows, output_dir="output"):
     ]
     for row, label, value in right_labels:
         cell_l = ws.cell(row=row, column=7, value=label)
-        cell_l.font = arial_8_bold
-        cell_l.fill = yellow_fill
+        cell_l.font = dark_font
+        cell_l.fill = header_label_fill
         cell_l.border = thin
         cell_l.alignment = left_align
 
         cell_v = ws.cell(row=row, column=8, value=value)
         cell_v.font = arial_8_bold
+        cell_v.fill = header_value_fill
         cell_v.border = thin
         cell_v.alignment = center
         if row == 6 and due_date:
@@ -248,21 +266,21 @@ def create_order_file(order_no, rows, output_dir="output"):
     ws.cell(row=SUBBAG_ROW, column=2, value="Sub-Bag").font = arial_10_bold
     ws.cell(row=SUBBAG_ROW, column=2).alignment = center
     ws.cell(row=SUBBAG_ROW, column=2).border = thin
-    ws.cell(row=SUBBAG_ROW, column=2).fill = yellow_fill
+    ws.cell(row=SUBBAG_ROW, column=2).fill = bom_struct_fill
 
     for col in stone_col_list:
         cell = ws.cell(row=SUBBAG_ROW, column=col, value="")
-        cell.fill = yellow_fill
+        cell.fill = bom_struct_fill
         cell.border = thin
         cell.alignment = center
     for i, s in enumerate(stone_cols):
         col = stone_col(i)
         cell = ws.cell(row=SUBBAG_ROW, column=col, value=s["sub_bag"])
         cell.font = arial_10_bold
-        cell.fill = yellow_fill
+        cell.fill = bom_struct_fill
         cell.alignment = center
         cell.border = thin
-    ws.cell(row=SUBBAG_ROW, column=total_col).fill = yellow_fill
+    ws.cell(row=SUBBAG_ROW, column=total_col).fill = bom_struct_fill
     ws.cell(row=SUBBAG_ROW, column=total_col).border = thin
 
     # BOM label
@@ -283,11 +301,11 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.font = arial_10_bold
         cell.alignment = center
         cell.border = thin
-        cell.fill = yellow_fill
+        cell.fill = bom_struct_fill
 
         for col in stone_col_list:
             c = ws.cell(row=r_idx, column=col, value="")
-            c.fill = yellow_fill
+            c.fill = bom_struct_fill
             c.border = thin
             c.alignment = center
 
@@ -295,11 +313,11 @@ def create_order_file(order_no, rows, output_dir="output"):
             col = stone_col(i)
             c = ws.cell(row=r_idx, column=col, value=s[key])
             c.font = arial_10_bold
-            c.fill = yellow_fill
+            c.fill = bom_struct_fill
             c.alignment = center
             c.border = thin
 
-        ws.cell(row=r_idx, column=total_col).fill = yellow_fill
+        ws.cell(row=r_idx, column=total_col).fill = bom_struct_fill
         ws.cell(row=r_idx, column=total_col).border = thin
 
     # Total Carat Weight header
@@ -307,18 +325,20 @@ def create_order_file(order_no, rows, output_dir="output"):
     cell.font = arial_10_bold
     cell.alignment = center
     cell.border = thin
-    cell.fill = yellow_fill
+    cell.fill = bom_struct_fill
 
     # Pre-calculated carat row
     ws.cell(row=CARAT_ROW, column=2, value=1).font = arial_10_bold
     ws.cell(row=CARAT_ROW, column=2).alignment = center
     ws.cell(row=CARAT_ROW, column=2).border = thin
+    ws.cell(row=CARAT_ROW, column=2).fill = carat_ref_fill
 
     for col in stone_col_list:
         c = ws.cell(row=CARAT_ROW, column=col, value=0)
         c.font = arial_10_bold
         c.alignment = center
         c.border = thin
+        c.fill = carat_ref_fill
 
     for i, s in enumerate(stone_cols):
         col = stone_col(i)
@@ -327,6 +347,7 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.font = arial_10_bold
         cell.alignment = center
         cell.border = thin
+        cell.fill = carat_ref_fill
         if isinstance(s["carat_per"], float):
             cell.number_format = '0.######'
 
@@ -334,14 +355,14 @@ def create_order_file(order_no, rows, output_dir="output"):
     ws.cell(row=FLUTE_HDR_ROW, column=2, value="Flute #").font = arial_10_bold
     ws.cell(row=FLUTE_HDR_ROW, column=2).alignment = center
     ws.cell(row=FLUTE_HDR_ROW, column=2).border = thin
-    ws.cell(row=FLUTE_HDR_ROW, column=2).fill = yellow_fill
+    ws.cell(row=FLUTE_HDR_ROW, column=2).fill = flute_input_fill
 
     for col in stone_col_list:
         c = ws.cell(row=FLUTE_HDR_ROW, column=col)
         c.border = thin
-        c.fill = yellow_fill
+        c.fill = flute_input_fill
     ws.cell(row=FLUTE_HDR_ROW, column=total_col).border = thin
-    ws.cell(row=FLUTE_HDR_ROW, column=total_col).fill = yellow_fill
+    ws.cell(row=FLUTE_HDR_ROW, column=total_col).fill = flute_input_fill
 
     first_stone_letter = get_column_letter(FIRST_STONE_COL)
     last_stone_letter = get_column_letter(last_stone_col)
@@ -353,12 +374,13 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.font = arial_10_bold
         cell.alignment = center
         cell.border = thin
-        cell.fill = yellow_fill
+        cell.fill = flute_input_fill
 
         for col in stone_col_list:
             c = ws.cell(row=r, column=col, value="")
             c.border = thin
             c.alignment = center
+            c.fill = flute_input_fill
 
         formula = f"=SUM({first_stone_letter}{r}:{last_stone_letter}{r})"
         cell = ws.cell(row=r, column=total_col, value=formula)
@@ -402,7 +424,7 @@ def create_order_file(order_no, rows, output_dir="output"):
     cell.font = arial_10_bold
     cell.alignment = center
     cell.border = thin
-    cell.fill = pale_green_fill
+    cell.fill = total_row_fill
 
     for col in stone_col_list:
         col_letter = get_column_letter(col)
@@ -411,7 +433,7 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.font = arial_10_bold
         cell.alignment = center
         cell.border = thin
-        cell.fill = pale_green_fill
+        cell.fill = total_row_fill
 
     total_letter = get_column_letter(total_col)
     formula = f"=SUM({total_letter}{FIRST_FLUTE_ROW}:{total_letter}{last_flute_row})"
@@ -419,7 +441,7 @@ def create_order_file(order_no, rows, output_dir="output"):
     cell.font = arial_10_bold
     cell.alignment = center
     cell.border = thin
-    cell.fill = pale_green_fill
+    cell.fill = total_row_fill
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{order_no}.xlsx")
