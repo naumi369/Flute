@@ -134,7 +134,7 @@ def create_order_file(order_no, rows, output_dir="output"):
     # Total Carat Weight: at J when ≤6 stones; after last stone when more
     if n_stones <= 6:
         last_stone_col = 8   # H
-        total_col = 10       # J
+        total_col = 9        # I — immediately after last stone, no blank gap
         display_slots = 6
     else:
         last_stone_col = FIRST_STONE_COL + n_stones - 1
@@ -153,91 +153,124 @@ def create_order_file(order_no, rows, output_dir="output"):
     ws.column_dimensions['B'].width = 9.0
     for col in range(FIRST_STONE_COL, last_stone_col + 1):
         ws.column_dimensions[get_column_letter(col)].width = 9.0
-    if n_stones <= 6:
-        ws.column_dimensions['I'].width = 3.0
     ws.column_dimensions[get_column_letter(total_col)].width = 16.0
 
     max_col_used = max(last_col, 10)
 
-    # ========== HEADER (original-style) ==========
-    ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=max_col_used)
+    # ========== HEADER (exact preferred layout from user sample) ==========
+    # Row 1: STYLE INFORMATION (A1:H1 gray) | PICTURE (I1:J1)
+    # STYLE INFORMATION bar: A1 through column before Total
+    style_end = total_col - 1
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=style_end)
+    ws['A1'] = "STYLE INFORMATION"
+    ws['A1'].font = arial_9_bold
+    ws['A1'].alignment = center
+    for c in range(1, style_end + 1):
+        ws.cell(row=1, column=c).fill = section_fill
+        ws.cell(row=1, column=c).border = thin
 
-    # PICTURE
-    ws.merge_cells('B2:C2')
-    ws['B2'] = "PICTURE"
-    ws['B2'].font = arial_10_bold
-    ws['B2'].alignment = center
-    ws['B2'].fill = no_fill
-    apply_outer_border(ws, 2, 2, 2, 3)
+    # PICTURE — single cell in the Total Carat Weight column only
+    pic = ws.cell(row=1, column=total_col, value="PICTURE")
+    pic.font = arial_10_bold
+    pic.alignment = center
+    pic.border = thin
+    pic.fill = no_fill
 
-    # STYLE INFORMATION
-    ws.merge_cells(start_row=2, start_column=4, end_row=2, end_column=max_col_used)
-    ws['D2'] = "STYLE INFORMATION"
-    ws['D2'].font = arial_9_bold
-    ws['D2'].alignment = center
-    ws['D2'].fill = no_fill
-    apply_outer_border(ws, 2, 4, 2, max_col_used)
+    # Picture body area: same single column, rows 2–7
+    for r in range(2, 8):
+        cell = ws.cell(row=r, column=total_col, value="")
+        cell.border = thin
+        cell.fill = no_fill
+    apply_outer_border(ws, 2, total_col, 7, total_col)
 
-    # Empty area under PICTURE
-    ws.merge_cells('B3:C10')
-    apply_outer_border(ws, 3, 2, 10, 3)
+    def lbl(row, col, text_val):
+        cell = ws.cell(row=row, column=col, value=text_val)
+        cell.font = dark_font
+        cell.alignment = left_align
+        cell.border = thin
+        cell.fill = no_fill
+        return cell
 
-    # Left labels (Min. T.Weight under PO Num)
-    labels = [
-        (3, "STYLE #", style),
-        (4, "Order No", order_no),
-        (5, "DESCRIPTION", ""),
-        (6, "TOTAL CARAT WT.", 0),
-        (7, "SHIP TO", ship_to),
-        (8, "PO Num", po_num),
-        (9, "Min. T.Weight", round(min_t_weight, 3) if isinstance(min_t_weight, float) else min_t_weight),
-    ]
-    for row, label, value in labels:
-        cell_l = ws.cell(row=row, column=4, value=label)
-        cell_l.font = dark_font
-        cell_l.fill = header_label_fill
-        cell_l.border = thin
-        cell_l.alignment = left_align
+    def val_cd(row, value, fmt=None):
+        """Value in merged C:D with light blue fill."""
+        ws.merge_cells(start_row=row, start_column=3, end_row=row, end_column=4)
+        cell = ws.cell(row=row, column=3, value=value)
+        cell.font = arial_8_bold
+        cell.alignment = center
+        cell.fill = header_value_fill
+        cell.border = thin
+        ws.cell(row=row, column=4).fill = header_value_fill
+        ws.cell(row=row, column=4).border = thin
+        if fmt:
+            cell.number_format = fmt
+        return cell
 
-        cell_v = ws.cell(row=row, column=5, value=value)
-        cell_v.font = arial_8_bold
-        cell_v.fill = header_value_fill
-        cell_v.border = thin
+    def val_g(row, value, fmt=None):
+        """Value in column G with light blue fill."""
+        cell = ws.cell(row=row, column=7, value=value)
+        cell.font = arial_8_bold
+        cell.alignment = center
+        cell.fill = header_value_fill
+        cell.border = thin
+        if fmt:
+            cell.number_format = fmt
+        return cell
 
-    # Right labels
-    right_labels = [
-        (3, "Item #", ""),
-        (4, "Vendor Name", "Frederick Goldman"),
-        (5, "Vendor #", ""),
-        (6, "Due Date", due_date),
-        (7, "Units", units),
-        (8, "METAL", ""),
-    ]
-    for row, label, value in right_labels:
-        cell_l = ws.cell(row=row, column=7, value=label)
-        cell_l.font = dark_font
-        cell_l.fill = header_label_fill
-        cell_l.border = thin
-        cell_l.alignment = left_align
+    # Row 2: STYLE # | value | Order No | value
+    lbl(2, 2, "STYLE #")
+    val_cd(2, style)
+    lbl(2, 6, "Order No")
+    val_g(2, order_no)
 
-        cell_v = ws.cell(row=row, column=8, value=value)
-        cell_v.font = arial_8_bold
-        cell_v.fill = header_value_fill
-        cell_v.border = thin
-        cell_v.alignment = center
-        if row == 6 and due_date:
-            cell_v.number_format = 'YYYY-MM-DD'
+    # Row 3: DESCRIPTION | (empty value area) | SHIP TO | value
+    lbl(3, 2, "DESCRIPTION")
+    val_cd(3, "")
+    lbl(3, 6, "SHIP TO")
+    val_g(3, ship_to)
 
-    # Tighter header row heights + consistent alignment
-    for r in range(3, 11):
-        ws.row_dimensions[r].height = 15
-    # Number format for Min. T.Weight (3 decimals)
-    ws.cell(row=9, column=5).number_format = '0.000'
+    # Row 4: TOTAL CARAT WT. | 0 | PO Num |
+    lbl(4, 2, "TOTAL CARAT WT.")
+    val_cd(4, 0)
+    lbl(4, 6, "PO Num")
+    val_g(4, po_num)
 
+    # Row 5: Due Date | date | Units | units
+    lbl(5, 2, "Due Date")
+    val_cd(5, due_date, fmt='YYYY-MM-DD' if due_date else None)
+    lbl(5, 6, "Units")
+    val_g(5, units)
 
-    # Blank row 11 after METAL
-    # Sequence numbers row 12 (invisible)
-    SEQ_ROW = 12
+    # Row 6: Min. T.Weight | value | Vendor # |
+    lbl(6, 2, "Min. T.Weight")
+    val_cd(6, round(min_t_weight, 3) if isinstance(min_t_weight, float) else min_t_weight, fmt='0.000')
+    lbl(6, 6, "Vendor #")
+    val_g(6, "")
+
+    # Row 7: Vendor Name | Frederick Goldman | METAL |
+    lbl(7, 2, "Vendor Name")
+    val_cd(7, "Frederick Goldman")
+    lbl(7, 6, "METAL")
+    val_g(7, "")
+
+    # Row heights
+    for r in range(1, 8):
+        ws.row_dimensions[r].height = 16
+
+    # Column widths matching preferred form
+    ws.column_dimensions['A'].width = 5.5
+    ws.column_dimensions['B'].width = 14
+    ws.column_dimensions['C'].width = 10
+    ws.column_dimensions['D'].width = 10
+    ws.column_dimensions['E'].width = 9
+    ws.column_dimensions['F'].width = 12
+    ws.column_dimensions['G'].width = 14
+    ws.column_dimensions['H'].width = 9
+    ws.column_dimensions['I'].width = 8
+    ws.column_dimensions['J'].width = 16
+
+    # Row 8 blank
+    # Row 9: sequence numbers (invisible) in stone columns C–H (or more)
+    SEQ_ROW = 9
     for i in range(display_slots):
         col = FIRST_STONE_COL + i
         cell = ws.cell(row=SEQ_ROW, column=col, value=i + 1)
@@ -245,14 +278,20 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.alignment = center
         cell.border = thin
 
+    # Ensure stone / total column widths
+    for col in range(FIRST_STONE_COL, last_stone_col + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 9.0
+    ws.column_dimensions[get_column_letter(total_col)].width = 16.0
+
+
     # ========== BOM SECTION ==========
-    SUBBAG_ROW = 13
-    QLTY_ROW = 14
-    SIZE_ROW = 15
-    STONES_ROW = 16
-    CARAT_ROW = 17
-    FLUTE_HDR_ROW = 18
-    FIRST_FLUTE_ROW = 19
+    SUBBAG_ROW = 10
+    QLTY_ROW = 11
+    SIZE_ROW = 12
+    STONES_ROW = 13
+    CARAT_ROW = 14
+    FLUTE_HDR_ROW = 15
+    FIRST_FLUTE_ROW = 16
 
     def stone_col(i):
         return FIRST_STONE_COL + i
@@ -413,8 +452,8 @@ def create_order_file(order_no, rows, output_dir="output"):
     green_fill_cf = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     red_fill_cf = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     # Formula relative to top-left of range
-    within_formula = f'AND({total_letter}{FIRST_FLUTE_ROW}>=$E$9*0.9,{total_letter}{FIRST_FLUTE_ROW}<=$E$9*1.1)'
-    outside_formula = f'OR({total_letter}{FIRST_FLUTE_ROW}<$E$9*0.9,{total_letter}{FIRST_FLUTE_ROW}>$E$9*1.1)'
+    within_formula = f'AND({total_letter}{FIRST_FLUTE_ROW}>=$C$6*0.9,{total_letter}{FIRST_FLUTE_ROW}<=$C$6*1.1)'
+    outside_formula = f'OR({total_letter}{FIRST_FLUTE_ROW}<$C$6*0.9,{total_letter}{FIRST_FLUTE_ROW}>$C$6*1.1)'
     ws.conditional_formatting.add(cf_range, FormulaRule(formula=[within_formula], fill=green_fill_cf))
     ws.conditional_formatting.add(cf_range, FormulaRule(formula=[outside_formula], fill=red_fill_cf))
 
@@ -442,6 +481,57 @@ def create_order_file(order_no, rows, output_dir="output"):
     cell.alignment = center
     cell.border = thin
     cell.fill = total_row_fill
+
+    # ----- Print-ready setup -----
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # as many pages tall as needed
+    ws.page_setup.paperSize = 9  # A4
+    ws.print_area = f"A1:{get_column_letter(total_col)}{total_row}"
+    ws.page_margins.left = 0.4
+    ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    # ----- Print setup: A4, landscape, narrow margins, fit to width -----
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # as many pages tall as needed
+    ws.page_margins.left = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top = 0.25
+    ws.page_margins.bottom = 0.25
+    ws.page_margins.header = 0.1
+    ws.page_margins.footer = 0.1
+    # Print area: used block
+    last_print_row = total_row
+    last_print_col = get_column_letter(total_col)
+    ws.print_area = f"A1:{last_print_col}{last_print_row}"
+    ws.print_title_rows = "1:9"  # repeat header rows on each printed page
+
+    # ----- Print setup: A4, portrait, narrow margins -----
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # as many pages tall as needed
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    # Narrow margins (inches)
+    ws.page_margins.left = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+    ws.page_margins.header = 0.2
+    ws.page_margins.footer = 0.2
+    # Print area = used range
+    last_row = total_row
+    last_print_col = get_column_letter(total_col)
+    ws.print_area = f"A1:{last_print_col}{last_row}"
+    ws.print_title_rows = "1:9"  # repeat header rows on each printed page
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{order_no}.xlsx")
