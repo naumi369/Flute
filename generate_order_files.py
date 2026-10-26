@@ -539,6 +539,129 @@ def create_order_file(order_no, rows, output_dir="output"):
     return out_path, n_stones, units, min_t_weight
 
 
+
+def merge_order_files(file_paths, output_path):
+    """
+    Merge multiple order Excel files onto one sheet, stacked top-to-bottom
+    with 2 blank rows between each file.
+
+    Print: A4, portrait, narrow margins, fit to width.
+    No forced page breaks between files — short forms share a page when they fit.
+    """
+    from copy import copy
+    from openpyxl.utils import get_column_letter
+
+    if not file_paths:
+        raise ValueError("No files to merge.")
+
+    out_wb = openpyxl.Workbook()
+    out_ws = out_wb.active
+    out_ws.title = "Merged Orders"
+    out_ws.sheet_view.showGridLines = False
+
+    current_row = 1
+    max_col_used = 1
+    col_widths = {}
+
+    for idx, fpath in enumerate(file_paths):
+        src_wb = openpyxl.load_workbook(fpath)
+        src_ws = src_wb.active
+
+        # Determine used range
+        min_r, min_c = 1, 1
+        max_r = src_ws.max_row or 1
+        max_c = src_ws.max_column or 1
+        # Tighten max_r/max_c to last non-empty
+        for r in range(max_r, 0, -1):
+            if any(src_ws.cell(r, c).value not in (None, "") for c in range(1, max_c + 1)):
+                max_r = r
+                break
+        for c in range(max_c, 0, -1):
+            if any(src_ws.cell(r, c).value not in (None, "") for r in range(1, max_r + 1)):
+                max_c = c
+                break
+
+        max_col_used = max(max_col_used, max_c)
+
+        # Copy column widths from first file (and expand if later files are wider)
+        for c in range(1, max_c + 1):
+            letter = get_column_letter(c)
+            w = src_ws.column_dimensions[letter].width
+            if w:
+                col_widths[letter] = max(col_widths.get(letter, 0), w)
+
+        # Copy merged cells (offset by current_row - 1)
+        row_offset = current_row - 1
+        merges_to_add = []
+        for merged in src_ws.merged_cells.ranges:
+            merges_to_add.append((
+                merged.min_row + row_offset,
+                merged.min_col,
+                merged.max_row + row_offset,
+                merged.max_col,
+            ))
+
+        # Copy cells (value + style)
+        for r in range(1, max_r + 1):
+            src_height = src_ws.row_dimensions[r].height
+            if src_height:
+                out_ws.row_dimensions[current_row].height = src_height
+
+            for c in range(1, max_c + 1):
+                src_cell = src_ws.cell(r, c)
+                dst_cell = out_ws.cell(current_row, c)
+
+                dst_cell.value = src_cell.value
+
+                if src_cell.has_style:
+                    dst_cell.font = copy(src_cell.font)
+                    dst_cell.fill = copy(src_cell.fill)
+                    dst_cell.border = copy(src_cell.border)
+                    dst_cell.alignment = copy(src_cell.alignment)
+                    dst_cell.number_format = src_cell.number_format
+
+            current_row += 1
+
+        for mr in merges_to_add:
+            try:
+                out_ws.merge_cells(
+                    start_row=mr[0], start_column=mr[1],
+                    end_row=mr[2], end_column=mr[3],
+                )
+            except Exception:
+                pass
+
+        src_wb.close()
+
+        # 2 blank rows between files (not after the last)
+        if idx < len(file_paths) - 1:
+            current_row += 2
+
+    # Apply column widths
+    for letter, w in col_widths.items():
+        out_ws.column_dimensions[letter].width = w
+
+    # Print setup: A4, portrait, narrow margins, fit width (auto-fit)
+    out_ws.page_setup.paperSize = out_ws.PAPERSIZE_A4
+    out_ws.page_setup.orientation = "portrait"
+    out_ws.page_setup.fitToPage = True
+    out_ws.page_setup.fitToWidth = 1
+    out_ws.page_setup.fitToHeight = 0
+    out_ws.sheet_properties.pageSetUpPr.fitToPage = True
+    out_ws.page_margins.left = 0.25
+    out_ws.page_margins.right = 0.25
+    out_ws.page_margins.top = 0.5
+    out_ws.page_margins.bottom = 0.5
+    out_ws.page_margins.header = 0.2
+    out_ws.page_margins.footer = 0.2
+
+    last_col_letter = get_column_letter(max_col_used)
+    out_ws.print_area = f"A1:{last_col_letter}{current_row - 1}"
+    # No forced page breaks between orders — short forms share a page when they fit
+
+    out_wb.save(output_path)
+    return output_path, len(file_paths), current_row - 1
+
 def process_file(input_file, output_dir, log_callback=None):
     def log(msg):
         if log_callback:
