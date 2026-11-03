@@ -3,11 +3,12 @@
 Generate individual Order Excel files from daily sample data.
 Supports both command-line and a simple GUI.
 
-Layout (reverted to stable version):
-- Header style matching original samples (yellow labels)
-- Min. T.Weight under PO Num on the left
-- Stone columns continuous from C; Total Carat Weight at J by default,
-  or right after last stone when there are more than 6 items
+Layout:
+- Header block with labels in B / F and values in C:D / G
+- Min. T.Weight under Due Date on the left
+- Stone columns continuous from C; Total Carat Weight in column I (right after
+  the 6 default stone slots), or right after the last stone when there are
+  more than 6 items
 - Blank row after METAL
 - Item sequence numbers with invisible (white) font
 - PICTURE / STYLE INFORMATION / BOM with plain outer borders
@@ -17,13 +18,15 @@ Layout (reverted to stable version):
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-from openpyxl.formatting.rule import FormulaRule, CellIsRule
-from openpyxl.utils import get_column_letter
+from openpyxl.formatting.rule import FormulaRule
+from openpyxl.utils import get_column_letter, range_boundaries
 from datetime import datetime, timedelta
 from collections import defaultdict
 import os
 import sys
 import threading
+import queue
+import subprocess
 import json
 import re
 from pathlib import Path
@@ -43,10 +46,6 @@ flute_input_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_ty
 total_row_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 # Section title bars
 section_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-# Legacy aliases used in a few places
-yellow_fill = header_label_fill
-pale_green_fill = total_row_fill
-light_gray_fill = section_fill
 no_fill = PatternFill(fill_type=None)
 thin_side = Side(style='thin')
 dotted_side = Side(style='dotted')
@@ -93,12 +92,43 @@ def apply_outer_border(ws, start_row, start_col, end_row, end_col):
 
 
 def excel_serial_to_date(serial):
+    """Excel serial number, datetime, or a common date string -> datetime (or None)."""
     if isinstance(serial, datetime):
         return serial
+    if serial in (None, ""):
+        return None
     try:
         return datetime(1899, 12, 30) + timedelta(days=float(serial))
-    except Exception:
-        return None
+    except (TypeError, ValueError):
+        pass
+    text = str(serial).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m/%d/%y", "%d-%b-%Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def clean_order_no(value):
+    """Order numbers read from Excel are often floats (12345.0); normalise to text."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
+
+
+def safe_filename(name):
+    """Remove characters that are illegal in file names (/ \\ : * ? " < > |)."""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")
+    return cleaned or "order"
+
+
+def to_int(value, default=1):
+    try:
+        n = int(float(value))
+        return n if n > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def create_order_file(order_no, rows, output_dir="output"):
@@ -108,11 +138,12 @@ def create_order_file(order_no, rows, output_dir="output"):
     first = rows[0]
     style = first.get("Style#") or first.get("Style #") or ""
     ship_to = first.get("Ship To")
-    units = int(first.get("Units") or 1)
+    units = to_int(first.get("Units"), 1)
     due_serial = first.get("Due_date") or first.get("Due Date")
     due_date = excel_serial_to_date(due_serial)
     po_num = first.get("PO Num") or ""
 
+    warnings = []
     stone_cols = []
     for r in rows:
         stones_total = float(r.get("Stones#") or 0)
@@ -120,6 +151,10 @@ def create_order_file(order_no, rows, output_dir="output"):
         stones_per = stones_total / units if units else 0
         if abs(stones_per - round(stones_per)) < 1e-9:
             stones_per = int(round(stones_per))
+        else:
+            warnings.append(
+                f"Sub Bag {r.get('Sub Bag#')}: {stones_total:g} stones / {units} units "
+                f"= {stones_per:.3f} per unit (not a whole number)")
         carat_per = size * stones_per
         stone_cols.append({
             "sub_bag": r.get("Sub Bag#"),
@@ -132,10 +167,10 @@ def create_order_file(order_no, rows, output_dir="output"):
     n_stones = len(stone_cols)
     min_t_weight = sum(s["carat_per"] for s in stone_cols)
 
-    # Total Carat Weight: at J when ≤6 stones; after last stone when more
+    # Total Carat Weight: column I when ≤6 stones; right after last stone when more
     if n_stones <= 6:
         last_stone_col = 8   # H
-        total_col = 9        # I — immediately after last stone, no blank gap
+        total_col = 9        # I — immediately after the 6 stone slots, no blank gap
         display_slots = 6
     else:
         last_stone_col = FIRST_STONE_COL + n_stones - 1
@@ -144,22 +179,26 @@ def create_order_file(order_no, rows, output_dir="output"):
 
     last_col = total_col
 
+    # Row map
+    SEQ_ROW = 9
+    SUBBAG_ROW = 10
+    QLTY_ROW = 11
+    SIZE_ROW = 12
+    STONES_ROW = 13
+    CARAT_ROW = 14
+    FLUTE_HDR_ROW = 15
+    FIRST_FLUTE_ROW = 16
+    last_flute_row = FIRST_FLUTE_ROW + units - 1
+    total_row = last_flute_row + 1
+    total_letter = get_column_letter(total_col)
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sheet1"
     ws.sheet_view.showGridLines = False
 
-    # Column widths
-    ws.column_dimensions['A'].width = 5.5
-    ws.column_dimensions['B'].width = 9.0
-    for col in range(FIRST_STONE_COL, last_stone_col + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 9.0
-    ws.column_dimensions[get_column_letter(total_col)].width = 16.0
-
-    max_col_used = max(last_col, 10)
-
-    # ========== HEADER (exact preferred layout from user sample) ==========
-    # Row 1: STYLE INFORMATION (A1:H1 gray) | PICTURE (I1:J1)
+    # ========== HEADER ==========
+    # Row 1: STYLE INFORMATION (gray, A to the column before Total) | PICTURE (Total column)
     # STYLE INFORMATION bar: A1 through column before Total
     style_end = total_col - 1
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=style_end)
@@ -231,7 +270,7 @@ def create_order_file(order_no, rows, output_dir="output"):
 
     # Row 4: TOTAL CARAT WT. | 0 | PO Num |
     lbl(4, 2, "TOTAL CARAT WT.")
-    val_cd(4, 0)
+    val_cd(4, f"={total_letter}{total_row}", fmt='0.000')  # live total of the flute entries
     lbl(4, 6, "PO Num")
     val_g(4, po_num)
 
@@ -257,21 +296,18 @@ def create_order_file(order_no, rows, output_dir="output"):
     for r in range(1, 8):
         ws.row_dimensions[r].height = 16
 
-    # Column widths matching preferred form
+    # Column widths (set once, in one place)
     ws.column_dimensions['A'].width = 5.5
     ws.column_dimensions['B'].width = 14
-    ws.column_dimensions['C'].width = 10
-    ws.column_dimensions['D'].width = 10
-    ws.column_dimensions['E'].width = 9
-    ws.column_dimensions['F'].width = 12
-    ws.column_dimensions['G'].width = 14
-    ws.column_dimensions['H'].width = 9
-    ws.column_dimensions['I'].width = 8
-    ws.column_dimensions['J'].width = 16
+    for col in range(FIRST_STONE_COL, last_stone_col + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 9.0
+    # Wider columns for the header values (Style #, Ship To, ...)
+    for letter, w in (('C', 10), ('D', 10), ('F', 12), ('G', 16)):
+        ws.column_dimensions[letter].width = w
+    ws.column_dimensions[total_letter].width = 16.0
 
     # Row 8 blank
     # Row 9: sequence numbers (invisible) in stone columns C–H (or more)
-    SEQ_ROW = 9
     for i in range(display_slots):
         col = FIRST_STONE_COL + i
         cell = ws.cell(row=SEQ_ROW, column=col, value=i + 1)
@@ -279,28 +315,11 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.alignment = center
         cell.border = thin
 
-    # Ensure stone / total column widths
-    for col in range(FIRST_STONE_COL, last_stone_col + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 9.0
-    ws.column_dimensions[get_column_letter(total_col)].width = 16.0
-
-
     # ========== BOM SECTION ==========
-    SUBBAG_ROW = 10
-    QLTY_ROW = 11
-    SIZE_ROW = 12
-    STONES_ROW = 13
-    CARAT_ROW = 14
-    FLUTE_HDR_ROW = 15
-    FIRST_FLUTE_ROW = 16
-
     def stone_col(i):
         return FIRST_STONE_COL + i
 
-    if n_stones <= 6:
-        stone_col_list = list(range(FIRST_STONE_COL, 9))  # C–H
-    else:
-        stone_col_list = list(range(FIRST_STONE_COL, FIRST_STONE_COL + n_stones))
+    stone_col_list = list(range(FIRST_STONE_COL, last_stone_col + 1))  # C–H, or more
 
     # Sub-Bag
     ws.cell(row=SUBBAG_ROW, column=2, value="Sub-Bag").font = arial_10_bold
@@ -374,7 +393,7 @@ def create_order_file(order_no, rows, output_dir="output"):
     ws.cell(row=CARAT_ROW, column=2).fill = carat_ref_fill
 
     for col in stone_col_list:
-        c = ws.cell(row=CARAT_ROW, column=col, value=0)
+        c = ws.cell(row=CARAT_ROW, column=col)
         c.font = arial_10_bold
         c.alignment = center
         c.border = thin
@@ -417,7 +436,7 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.fill = flute_input_fill
 
         for col in stone_col_list:
-            c = ws.cell(row=r, column=col, value="")
+            c = ws.cell(row=r, column=col)
             c.border = thin
             c.alignment = center
             c.fill = flute_input_fill
@@ -428,33 +447,21 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.alignment = center
         cell.border = thin
 
-    last_flute_row = FIRST_FLUTE_ROW + units - 1
-    total_row = last_flute_row + 1
-
-    # Light gray background + dotted outer border for BOM entry block
-    bom_start_row = SUBBAG_ROW
-    bom_end_row = last_flute_row
-    for r in range(bom_start_row, bom_end_row + 1):
-        for c in stone_col_list:
-            cell = ws.cell(row=r, column=c)
-            # Keep yellow on header structure rows; light gray on empty flute input cells only
-            if r >= FIRST_FLUTE_ROW and (cell.value is None or cell.value == ""):
-                if cell.fill is None or cell.fill.fgColor is None or cell.fill.patternType is None:
-                    cell.fill = light_gray_fill
-        # Also light gray on empty total-col flute cells is not needed (has formula)
     # Dotted outer border around the whole BOM data block
-    apply_dotted_outer_border(ws, bom_start_row, 2, last_flute_row, total_col)
+    apply_dotted_outer_border(ws, SUBBAG_ROW, 2, last_flute_row, total_col)
 
-    # Conditional formatting: Flute Total Carat Weight within 10% of Min. T.Weight (E9)
-    # Green if within ±10%, red if outside
-    total_letter = get_column_letter(total_col)
+    # Conditional formatting: each flute's total within ±10% of Min. T.Weight (C6)
+    # Green if within ±10%, red if outside. Rows with no data entered yet stay uncoloured.
     cf_range = f"{total_letter}{FIRST_FLUTE_ROW}:{total_letter}{last_flute_row}"
     # Within 10%: >= Min*0.9 AND <= Min*1.1
     green_fill_cf = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     red_fill_cf = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     # Formula relative to top-left of range
-    within_formula = f'AND({total_letter}{FIRST_FLUTE_ROW}>=$C$6*0.9,{total_letter}{FIRST_FLUTE_ROW}<=$C$6*1.1)'
-    outside_formula = f'OR({total_letter}{FIRST_FLUTE_ROW}<$C$6*0.9,{total_letter}{FIRST_FLUTE_ROW}>$C$6*1.1)'
+    has_data = f'COUNT(${first_stone_letter}{FIRST_FLUTE_ROW}:${last_stone_letter}{FIRST_FLUTE_ROW})>0'
+    within_formula = (f'AND({has_data},{total_letter}{FIRST_FLUTE_ROW}>=$C$6*0.9,'
+                      f'{total_letter}{FIRST_FLUTE_ROW}<=$C$6*1.1)')
+    outside_formula = (f'AND({has_data},OR({total_letter}{FIRST_FLUTE_ROW}<$C$6*0.9,'
+                       f'{total_letter}{FIRST_FLUTE_ROW}>$C$6*1.1))')
     ws.conditional_formatting.add(cf_range, FormulaRule(formula=[within_formula], fill=green_fill_cf))
     ws.conditional_formatting.add(cf_range, FormulaRule(formula=[outside_formula], fill=red_fill_cf))
 
@@ -475,7 +482,6 @@ def create_order_file(order_no, rows, output_dir="output"):
         cell.border = thin
         cell.fill = total_row_fill
 
-    total_letter = get_column_letter(total_col)
     formula = f"=SUM({total_letter}{FIRST_FLUTE_ROW}:{total_letter}{last_flute_row})"
     cell = ws.cell(row=total_row, column=total_col, value=formula)
     cell.font = arial_10_bold
@@ -483,61 +489,25 @@ def create_order_file(order_no, rows, output_dir="output"):
     cell.border = thin
     cell.fill = total_row_fill
 
-    # ----- Print-ready setup -----
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToPage = True
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0  # as many pages tall as needed
-    ws.page_setup.paperSize = 9  # A4
-    ws.print_area = f"A1:{get_column_letter(total_col)}{total_row}"
-    ws.page_margins.left = 0.4
-    ws.page_margins.right = 0.4
-    ws.page_margins.top = 0.5
-    ws.page_margins.bottom = 0.5
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-
-    # ----- Print setup: A4, landscape, narrow margins, fit to width -----
-    ws.page_setup.paperSize = ws.PAPERSIZE_A4
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToPage = True
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0  # as many pages tall as needed
-    ws.page_margins.left = 0.25
-    ws.page_margins.right = 0.25
-    ws.page_margins.top = 0.25
-    ws.page_margins.bottom = 0.25
-    ws.page_margins.header = 0.1
-    ws.page_margins.footer = 0.1
-    # Print area: used block
-    last_print_row = total_row
-    last_print_col = get_column_letter(total_col)
-    ws.print_area = f"A1:{last_print_col}{last_print_row}"
-    ws.print_title_rows = "1:9"  # repeat header rows on each printed page
-
-    # ----- Print setup: A4, portrait, narrow margins -----
+    # ----- Print setup: A4 portrait, narrow margins, fit to width -----
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.orientation = "portrait"
-    ws.page_setup.fitToPage = True
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0  # as many pages tall as needed
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    # Narrow margins (inches)
     ws.page_margins.left = 0.25
     ws.page_margins.right = 0.25
     ws.page_margins.top = 0.5
     ws.page_margins.bottom = 0.5
     ws.page_margins.header = 0.2
     ws.page_margins.footer = 0.2
-    # Print area = used range
-    last_row = total_row
-    last_print_col = get_column_letter(total_col)
-    ws.print_area = f"A1:{last_print_col}{last_row}"
+    ws.print_area = f"A1:{total_letter}{total_row}"
     ws.print_title_rows = "1:9"  # repeat header rows on each printed page
 
     os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f"{order_no}.xlsx")
+    out_path = os.path.join(output_dir, f"{safe_filename(order_no)}.xlsx")
     wb.save(out_path)
-    return out_path, n_stones, units, min_t_weight
+    return out_path, n_stones, units, min_t_weight, warnings
 
 
 
@@ -571,7 +541,6 @@ def merge_order_files(file_paths, output_path):
     No forced page breaks between files — short forms share a page when they fit.
     """
     from copy import copy
-    from openpyxl.utils import get_column_letter
 
     if not file_paths:
         raise ValueError("No files to merge.")
@@ -657,6 +626,17 @@ def merge_order_files(file_paths, output_path):
             except Exception:
                 pass
 
+        # Conditional formatting (green/red flute check) is not copied with cell
+        # styles, so re-create it with rows shifted to the stacked position.
+        for cf in src_ws.conditional_formatting:
+            min_col, min_row, max_col, max_row = range_boundaries(str(cf.sqref))
+            new_range = (f"{get_column_letter(min_col)}{min_row + row_offset}:"
+                         f"{get_column_letter(max_col)}{max_row + row_offset}")
+            for rule in cf.rules:
+                new_rule = copy(rule)
+                new_rule.formula = [_shift_formula_rows(f, row_offset) for f in rule.formula]
+                out_ws.conditional_formatting.add(new_range, new_rule)
+
         src_wb.close()
 
         # 2 blank rows between files (not after the last)
@@ -706,7 +686,12 @@ def process_file(input_file, output_dir, log_callback=None):
         log(f"ERROR: Could not open Excel file: {e}")
         return []
 
-    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    first_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+    if first_row is None:
+        log("ERROR: The input file is empty.")
+        wb.close()
+        return []
+    headers = [cell.value for cell in first_row]
     header_map = {}
     for i, h in enumerate(headers):
         if h is None:
@@ -723,7 +708,8 @@ def process_file(input_file, output_dir, log_callback=None):
                 rec[header_map[i]] = val
         order_no = rec.get("Order No") or rec.get("OrderNo")
         if order_no:
-            orders[str(order_no).strip()].append(rec)
+            orders[clean_order_no(order_no)].append(rec)
+    wb.close()
 
     log(f"Found {len(orders)} unique order(s) in the file.")
     created = []
@@ -732,8 +718,10 @@ def process_file(input_file, output_dir, log_callback=None):
         try:
             result = create_order_file(order_no, rows, output_dir=output_dir)
             if result:
-                path, n_stones, units, min_tw = result
-                log(f"  ✓ {order_no}.xlsx  (stones={n_stones}, units={units}, Min.T.Weight={min_tw:.4f})")
+                path, n_stones, units, min_tw, warnings = result
+                log(f"  ✓ {os.path.basename(path)}  (stones={n_stones}, units={units}, Min.T.Weight={min_tw:.4f})")
+                for w in warnings:
+                    log(f"      ⚠ {order_no}: {w}")
                 created.append(path)
         except Exception as e:
             log(f"  ✗ Failed {order_no}: {e}")
@@ -799,7 +787,7 @@ def run_gui():
     ttk.Entry(in_frame, textvariable=input_var, width=70).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
     def browse_input():
         path = filedialog.askopenfilename(title="Select sample data Excel",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")])
+            filetypes=[("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")])
         if path:
             input_var.set(path)
     ttk.Button(in_frame, text="Browse…", command=browse_input).pack(side=tk.RIGHT)
@@ -824,7 +812,19 @@ def run_gui():
         log_text.insert(tk.END, msg + "\n")
         log_text.see(tk.END)
         log_text.configure(state="disabled")
-        root.update_idletasks()
+
+    # Tkinter widgets must only be touched from the main thread, so the worker
+    # thread puts messages on a queue and the main thread drains it.
+    log_queue = queue.Queue()
+
+    def drain_log_queue():
+        try:
+            while True:
+                append_log(log_queue.get_nowait())
+        except queue.Empty:
+            pass
+        root.after(100, drain_log_queue)
+    drain_log_queue()
 
     btn_frame = ttk.Frame(main)
     btn_frame.pack(fill=tk.X, pady=4)
@@ -849,9 +849,9 @@ def run_gui():
             if sys.platform == "win32":
                 os.startfile(folder)
             elif sys.platform == "darwin":
-                os.system(f'open "{folder}"')
+                subprocess.Popen(["open", folder])
             else:
-                os.system(f'xdg-open "{folder}"')
+                subprocess.Popen(["xdg-open", folder])
         else:
             messagebox.showinfo("Info", "Output folder does not exist yet.")
     open_btn.configure(command=open_output)
@@ -874,19 +874,21 @@ def run_gui():
 
         def worker():
             try:
-                created = process_file(input_path, output_path, log_callback=append_log)
+                created = process_file(input_path, output_path, log_callback=log_queue.put)
                 root.after(0, lambda: on_finished(True, len(created)))
             except Exception as e:
-                append_log(f"\nERROR: {e}")
+                log_queue.put(f"\nERROR: {e}")
                 root.after(0, lambda: on_finished(False, 0))
 
         def on_finished(success, count):
             generate_btn.configure(state="normal")
-            if success:
+            if success and count:
                 status_var.set(f"Finished – {count} file(s) created")
                 save_config({"last_input": input_path, "last_output": output_path})
-                if count:
-                    messagebox.showinfo("Success", f"Created {count} order file(s).\n\nSaved in:\n{output_path}")
+                messagebox.showinfo("Success", f"Created {count} order file(s).\n\nSaved in:\n{output_path}")
+            elif success:
+                status_var.set("No files created")
+                messagebox.showwarning("Nothing created", "No order files were created. Check the log.")
             else:
                 status_var.set("Finished with errors")
                 messagebox.showerror("Error", "Something went wrong. Check the log.")
