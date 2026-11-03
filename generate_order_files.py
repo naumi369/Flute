@@ -25,6 +25,7 @@ import os
 import sys
 import threading
 import json
+import re
 from pathlib import Path
 
 # ---------- Styles (modern multi-color palette) ----------
@@ -540,6 +541,27 @@ def create_order_file(order_no, rows, output_dir="output"):
 
 
 
+def _shift_formula_rows(formula: str, row_offset: int) -> str:
+    """
+    Shift all row numbers in an Excel formula by row_offset.
+    Handles refs like C16, $C$16, C16:H16, Sheet1!C16, etc.
+    """
+    if not row_offset:
+        return formula
+
+    def repl(m):
+        col = m.group(1)  # e.g. C or $C
+        abs_row = m.group(2)  # '$' or ''
+        row = int(m.group(3))
+        return f"{col}{abs_row}{row + row_offset}"
+
+    # Match column letters + optional $ + row number
+    # Avoid matching pure numbers that aren't cell refs
+    pattern = re.compile(r"(\$?[A-Za-z]{1,3})(\$?)(\d+)")
+    return pattern.sub(repl, formula)
+
+
+
 def merge_order_files(file_paths, output_path):
     """
     Merge multiple order Excel files onto one sheet, stacked top-to-bottom
@@ -611,7 +633,11 @@ def merge_order_files(file_paths, output_path):
                 src_cell = src_ws.cell(r, c)
                 dst_cell = out_ws.cell(current_row, c)
 
-                dst_cell.value = src_cell.value
+                # Adjust formula row references when stacking files
+                val = src_cell.value
+                if isinstance(val, str) and val.startswith("="):
+                    val = _shift_formula_rows(val, row_offset)
+                dst_cell.value = val
 
                 if src_cell.has_style:
                     dst_cell.font = copy(src_cell.font)
